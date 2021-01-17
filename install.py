@@ -12,6 +12,43 @@ def resource_path(relative_path: Path) -> Path:
 
     return base_path / relative_path
 
+# recursively test if two directories are the same
+def are_dir_trees_equal(dir1, dir2):
+    """
+    Compare two directories recursively. Files in each directory are
+    assumed to be equal if their names and contents are equal.
+
+    @param dir1: First directory path
+    @param dir2: Second directory path
+
+    @return: True if the directory trees are the same and 
+        there were no errors while accessing the directories or files, 
+        False otherwise.
+    """
+
+    import filecmp
+    import os.path
+
+    dirs_cmp = filecmp.dircmp(dir1, dir2)
+    if len(dirs_cmp.left_only) > 0 or len(dirs_cmp.right_only) > 0 or len(dirs_cmp.funny_files) > 0:
+        return False
+    (_, mismatch, errors) =  filecmp.cmpfiles(dir1, dir2, dirs_cmp.common_files, shallow=False)
+    if len(mismatch) > 0 or len(errors) > 0:
+        return False
+    for common_dir in dirs_cmp.common_dirs:
+        new_dir1 = os.path.join(dir1, common_dir)
+        new_dir2 = os.path.join(dir2, common_dir)
+        if not are_dir_trees_equal(new_dir1, new_dir2):
+            return False
+    return True
+
+# delete readonly files
+def del_rw(action, name, exc):
+    import os
+    import stat
+    os.chmod(name, stat.S_IWRITE)
+    os.remove(name)
+
 def install_java():
     from subprocess import run, PIPE
     try:
@@ -25,6 +62,21 @@ def install_java():
         except FileNotFoundError:
             logging.error(f"Java installer missing: {Configs.java_intaller_path}")
             exit(1)
+
+def copy_redistributables():
+    if Path(Configs.redistributable_folder_name).exists():
+        same = are_dir_trees_equal(str(Configs.redistributable_path), Configs.redistributable_folder_name)
+        if same:
+            logging.info("Skipping copying of redistributable directory")
+            return
+        else:
+            logging.warning("Differences found in redistributable directory. Deleting it.")
+            from shutil import rmtree
+            rmtree(Configs.redistributable_folder_name, onerror=del_rw)
+
+    logging.info("Copying redistributable directory ...")
+    from shutil import copytree
+    copytree(str(Configs.redistributable_path), Configs.redistributable_folder_name)
 
 def download_file(url: str, dst_folder: Path) -> Path:
     from tqdm import tqdm
@@ -98,20 +150,24 @@ def update_environment() -> str:
     environment = os.environ
     environment["SPARK_HOME"] = str(Configs.install_folder / Configs.spark_folder_name)
     environment["HADOOP_HOME"] = str(Configs.install_folder / Configs.spark_folder_name)
+    environment["JAVA_HOME"] = str(Path(Configs.redistributable_folder_name).resolve() / "jre")
+    environment["MY_PYTHON"] = str((Path(Configs.redistributable_folder_name) / "python").resolve())
 
     spark_bin_path = str(Path(environment["SPARK_HOME"]) / "bin")
     if environment["PATH"].find(spark_bin_path) == -1:
         # prepend new stuff to path
         environment["PATH"] = spark_bin_path + ";" + environment['PATH']
+        environment["PATH"] = str(Path(environment["JAVA_HOME"]) / "bin") + ";" + environment['PATH']
+        environment["PATH"] = environment["MY_PYTHON"] + ";" + environment['PATH']
     
     return environment
 
 class Configs:
-    java_home_path: Path = Path(r"C:\Progra~1\Java\jdk1.8.0_221")
-    java_intaller_path: Path = resource_path(Path(r"jdk-8u221-windows-x64.exe"))
+    redistributable_folder_name: str = "redistributable"
+    redistributable_path: Path = resource_path(Path(redistributable_folder_name)).resolve()
     temp_folder: Path = Path(r"temp").resolve()
     install_folder: Path = Path(".").resolve()
-    spark_download_url: str = "http://mirrors.nav.ro/apache/spark/spark-3.0.0-preview2/spark-3.0.0-preview2-bin-hadoop3.2.tgz" # https://www.apache.org/dyn/closer.lua/spark/spark-3.0.1/spark-3.0.1-bin-hadoop3.2.tgz
+    spark_download_url: str = "http://mirrors.nav.ro/apache/spark/spark-3.0.0-preview2/spark-3.0.0-preview2-bin-hadoop3.2.tgz"
     spark_folder_template: str = "spark*"
     spark_folder_name: str = "spark"
     hadoop_winutils_url: str = "https://github.com/cdarlint/winutils/archive/master.zip"
@@ -149,17 +205,20 @@ def main():
     if args.bundle:
         logging.getLogger().setLevel(logging.INFO)
         logging.info("Bundling application")
-        run('pyinstaller -y -F --add-data "jdk-8u221-windows-x64.exe";"." --uac-admin "install.py"')
+        # copy jre to redistributable/jre
+        # create python environment: conda create -p redistributable\python python=3
+        # or: conda env create -p .\redistributable\python -f environment_worker.yml
+        run('pyinstaller -y -F --add-data "redistributable";"redistributable/" --uac-admin "install.py"')
         # remove leftovers
-        import shutil
-        shutil.rmtree("build", True)
+        from shutil import rmtree
+        rmtree("build", True)
         Path("install.spec").unlink()
         input("Press any key to exit ...")
         # stop program here
         exit(0)
 
     # install spark
-    install_java()
+    copy_redistributables()
     if not (Configs.install_folder / Configs.spark_folder_name).exists():
         spark_archive_path: Path = download_file(Configs.spark_download_url, Configs.temp_folder)
         extract_archive(spark_archive_path, Configs.install_folder)
@@ -171,10 +230,23 @@ def main():
             copy_from_winutils_to_hadoop()
         else:
             logging.info(f"Skipping downloading and extracting of '{Configs.hadoop_winutils_url}' as it's already extracted")
+
+        # delete temp dir
+        from shutil import rmtree
+        rmtree(str(Configs.temp_folder), True)
     else:
         logging.info(f"Skipping downloading and extracting of '{Configs.spark_download_url}' as it's already extracted")
 
-    update_environment()
+    env = update_environment()
+
+    # create run script
+    with open("run_worker.bat", "w+") as file:
+        file.write(f'set SPARK_HOME={env["SPARK_HOME"]}\n')
+        file.write(f'set HADOOP_HOME={env["HADOOP_HOME"]}\n')
+        file.write(f'set JAVA_HOME={env["JAVA_HOME"]}\n')
+        file.write(f'set MY_PYTHON={env["MY_PYTHON"]}\n')
+        file.write('set PATH=%SPARK_HOME%\\bin;%JAVA_HOME%\\bin;%MY_PYTHON%;%PATH%\n')
+        file.write('call spark-class.cmd org.apache.spark.deploy.worker.Worker spark://127.0.0.1:7077')
 
     # run as requested or just open a command prompt
     try:
@@ -186,9 +258,6 @@ def main():
             run(['cmd'])
     except KeyboardInterrupt:
         pass
-
-    # to access pyspark in jupyter notebook run:
-    # conda install -c conda-forge findspark
 
 if __name__ == "__main__":
     main()

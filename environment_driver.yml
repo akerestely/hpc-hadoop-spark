@@ -1,0 +1,12 @@
+name: spark
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python
+  - jupyter
+  - jupyter_contrib_nbextensions
+  - scipy
+  - pandas
+  - pyarrow=0.16
+  - scikit-learn

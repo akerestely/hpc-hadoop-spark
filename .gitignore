@@ -1,4 +1,10 @@
-/hadoop/
-/hdfs/
-/temp/
+# development
+/.ipynb_checkpoints/
+/.vscode/
+/__pycache__/
+/dist/
+
+#
+/redistributable/
 /spark/
+/temp/

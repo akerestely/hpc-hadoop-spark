@@ -1,0 +1,8 @@
+name: bundler
+channels:
+  - defaults
+dependencies:
+  - python
+  - pyinstaller
+  - tqdm
+  - requests
