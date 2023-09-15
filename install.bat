@@ -1,9 +1,15 @@
-jdk-8u221-windows-x64.exe /s ADDLOCAL="ToolsFeature,SourceFeature"
+C:\Progra~1\Java\jdk1.8.0_221\bin\javac -version
+if errorlevel 1 (
+    rem required java is missing, so intall
+    jdk-8u221-windows-x64.exe /s ADDLOCAL="ToolsFeature,SourceFeature"
+)
 
 mkdir temp
 
 rem download and extract hadoop
 powershell -Command "Start-BitsTransfer -Source https://www-us.apache.org/dist/hadoop/common/hadoop-3.1.2/hadoop-3.1.2.tar.gz -Destination temp\hadoop.tar.gz"
+if errorlevel 1 exit /b %errorlevel%
+
 mkdir hadoop_temp
 tar -xzf temp\hadoop.tar.gz -C hadoop_temp --totals
 for /d %%a in ("hadoop_temp\*") do ren %%a hadoop
